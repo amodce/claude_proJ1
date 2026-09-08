@@ -59,8 +59,11 @@ docker info >/dev/null 2>&1 || die "无法连接 Docker daemon。请确认 docke
 
 if docker compose version >/dev/null 2>&1; then
   COMPOSE=(docker compose)
+  # 镜像都在本地，禁止回源拉取（离线环境下 compose 会一直重试直到超时）
+  UP_ARGS=(--pull never)
 elif command -v docker-compose >/dev/null 2>&1; then
   COMPOSE=(docker-compose)
+  UP_ARGS=()   # v1 的 up 不支持 --pull
   warn "使用的是旧版 docker-compose v1，建议升级到 Compose V2 插件。"
 else
   die "未找到 Docker Compose。请安装 docker compose 插件。"
@@ -158,14 +161,23 @@ fi
 
 log "启动 Dify"
 cd "$COMPOSE_DIR"
-# 镜像都在本地，禁止 compose 回源拉取（离线环境下会卡住）
-"${COMPOSE[@]}" up -d --pull never
+"${COMPOSE[@]}" up -d "${UP_ARGS[@]}"
 
 log "等待服务就绪"
 port="$(grep -E '^EXPOSE_NGINX_PORT=' "$ENV_FILE" | cut -d= -f2)"; port="${port:-80}"
+# curl 在精简系统上不一定有，没有就退回用 compose 的容器状态判断
+if command -v curl >/dev/null 2>&1; then
+  probe() { curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${port}/"; }
+elif command -v wget >/dev/null 2>&1; then
+  probe() { wget -q -O /dev/null -T 5 "http://127.0.0.1:${port}/"; }
+else
+  warn "未找到 curl/wget，改用容器状态判断就绪。"
+  probe() { ! "${COMPOSE[@]}" ps --status=restarting --status=exited -q 2>/dev/null | grep -q .; }
+fi
+
 ready=0
-for i in $(seq 1 60); do
-  if curl -fsS -o /dev/null "http://127.0.0.1:${port}/" 2>/dev/null; then ready=1; break; fi
+for _ in $(seq 1 60); do
+  if probe 2>/dev/null; then ready=1; break; fi
   sleep 5
 done
 
