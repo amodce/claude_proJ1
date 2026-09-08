@@ -1,0 +1,14 @@
+# Dify 1.9.2 离线部署所需镜像清单（linux/amd64）
+# 格式: <canonical-image>            # 说明
+# 以 # 开头的行与空行会被忽略。
+#
+# ---- 核心服务（默认 docker compose up 必需）----
+langgenius/dify-api:1.9.2                 # API / worker / worker_beat 共用
+langgenius/dify-web:1.9.2                 # 前端
+langgenius/dify-sandbox:0.2.12            # 代码执行沙箱
+langgenius/dify-plugin-daemon:0.3.3-local # 插件守护进程
+postgres:15-alpine                        # 主数据库
+redis:6-alpine                            # 缓存 / 队列
+ubuntu/squid:latest                       # ssrf_proxy
+nginx:latest                              # 反向代理入口
+semitechnologies/weaviate:1.27.0          # 默认向量库 (VECTOR_STORE=weaviate)

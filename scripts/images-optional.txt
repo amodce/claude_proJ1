@@ -1,0 +1,6 @@
+# 可选镜像：仅在切换到对应 profile / 向量库时需要。
+# 用法: ./scripts/build-offline-package.sh --extra-images scripts/images-optional.txt
+pgvector/pgvector:pg16                    # VECTOR_STORE=pgvector
+langgenius/qdrant:v1.7.3                  # VECTOR_STORE=qdrant
+tensorchord/pgvecto-rs:pg16-v0.3.0        # VECTOR_STORE=pgvecto-rs
+certbot/certbot                           # profile certbot (HTTPS 证书自动签发)
