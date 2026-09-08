@@ -85,13 +85,17 @@ MANIFEST="$PKG_DIR/images/manifest.txt"
 mirror_ref() {  # canonical name -> 镜像源上的完整引用
   local img="$1"
   [ -z "$REGISTRY_MIRROR" ] && { echo "$img"; return; }
-  # 已带 registry 域名的（含 . 或 :）保持原样，镜像源只代理 Docker Hub
-  case "${img%%/*}" in
-    *.*|*:*) echo "$img"; return ;;
-  esac
   case "$img" in
-    */*) echo "${REGISTRY_MIRROR}/${img}" ;;
-    *)   echo "${REGISTRY_MIRROR}/library/${img}" ;;
+    */*)
+      # 只有含 / 时首段才可能是 registry 域名；含 . 或 : 即认定是域名，
+      # 这类镜像不在 Docker Hub 上，镜像源代理不了，保持原样直连。
+      # （不能对整个 img 做这个判断：postgres:15-alpine 这种无 / 的名字
+      #  里的 : 是 tag 分隔符，不是端口号。）
+      case "${img%%/*}" in
+        *.*|*:*) echo "$img" ;;
+        *)       echo "${REGISTRY_MIRROR}/${img}" ;;
+      esac ;;
+    *) echo "${REGISTRY_MIRROR}/library/${img}" ;;
   esac
 }
 
