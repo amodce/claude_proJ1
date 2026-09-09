@@ -8,12 +8,17 @@
 
 ```
 ├── install.sh              离线安装脚本（主入口）
+├── install-docker.sh       离线安装 Docker Engine（目标机器没装 Docker 时用）
 ├── uninstall.sh            停止 / 清理
 ├── VERSION                 版本与构建信息
 ├── SHA256SUMS              包内所有文件的校验和
 ├── images/
 │   ├── dify-images.tar.gz  全部容器镜像（docker save 归档）
 │   └── manifest.txt        镜像清单：名称 / image ID / 大小
+├── runtime/                Docker Engine 静态包 + Compose 插件（构建时加 --no-docker 则没有此目录）
+│   ├── docker-<版本>.tgz
+│   ├── docker-compose
+│   └── VERSIONS
 ├── docker/                 Dify 官方 docker 部署目录（compose 文件、nginx、ssrf_proxy 等配置）
 │   └── .env.example        配置模板，install.sh 会据此生成 .env
 ├── dify-LICENSE
@@ -22,20 +27,22 @@
 
 ## 前置条件
 
-目标机器需要预先装好（这两样**不在本包内**，请按发行版另行离线安装）：
-
 | 组件 | 要求 |
 |---|---|
-| 操作系统 | Linux x86_64 |
-| Docker Engine | 20.10 以上，dockerd 正在运行 |
-| Docker Compose | V2 插件（`docker compose version` 可用） |
+| 操作系统 | Linux x86_64，内核 3.10 以上（建议 4.x+） |
 | CPU / 内存 | 至少 2 核 4GB，生产建议 4 核 8GB 以上 |
 | 磁盘 | 至少 15GB 可用空间 |
+| Docker | **不需要预装** —— 本包自带（见 `runtime/`） |
 
-离线安装 Docker 的常见做法：从 https://download.docker.com/linux/static/stable/x86_64/
-下载 `docker-<版本>.tgz` 静态包，以及 compose 插件二进制
-https://github.com/docker/compose/releases 的 `docker-compose-linux-x86_64`，
-一并拷到内网机器上安装。
+如果 `runtime/` 存在，`install.sh` 检测到机器上没有可用的 Docker 时会自动先执行
+`install-docker.sh`：解包静态二进制到 `/usr/local/bin`、装好 Compose 插件、写入
+systemd 服务并启动。也可以手动单独执行：
+
+```bash
+sudo ./install-docker.sh
+```
+
+已经装了 Docker 的机器会跳过这一步，不会覆盖现有环境（确需覆盖用 `FORCE=1`）。
 
 ## 安装
 
@@ -45,8 +52,12 @@ cd dify-offline-<版本>-linux-amd64
 sudo ./install.sh
 ```
 
-脚本会依次完成：环境检查 → 导入镜像 → 逐个校验镜像 → 生成 `docker/.env`（随机密钥 +
-离线适配）→ `docker compose up -d` → 等待服务就绪。
+脚本会依次完成：环境检查 →（需要时）安装 Docker → 导入镜像 → 逐个校验镜像 →
+生成 `docker/.env`（随机密钥 + 离线适配）→ `docker compose up -d --pull never` →
+等待 API 就绪。
+
+就绪判断探的是 `/console/api/setup` 而不是首页：首页只要 nginx 和 web 起来就能返回，
+但那时 api 可能还在跑数据库迁移。所以脚本报"安装完成"时服务是真的能用了。
 
 完成后浏览器打开 `http://<服务器IP>/install` 设置管理员账号。
 
@@ -114,6 +125,8 @@ docker compose down                # 停止
 校验环节会指出缺哪个。
 
 **导入镜像报磁盘空间不足** — 镜像解包后约 10GB，清理空间后重跑 `./install.sh`。
+
+**普通用户执行 docker 报权限错误** — `sudo usermod -aG docker <用户名>`，重新登录生效。
 
 **要换向量库**（pgvector / qdrant 等）— 本包只带了默认的 weaviate。换向量库需要额外镜像，
 用构建仓库里的 `scripts/images-optional.txt` 重新打一个包。

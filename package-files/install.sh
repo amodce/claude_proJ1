@@ -32,6 +32,9 @@ usage() {
   --skip-start           只准备配置与镜像，不启动服务
   --keep-default-secrets 不重新生成随机密钥（不推荐，仅用于复现问题）
   --online               保留联网特性（插件市场等）。默认按纯离线环境关闭。
+
+本包若含 runtime/ 目录，在目标机器没有 Docker 时会自动先装 Docker Engine；
+也可以单独执行 ./install-docker.sh。
   -h, --help             显示本帮助
 EOF
 }
@@ -54,7 +57,17 @@ log "环境检查"
 arch="$(uname -m)"
 [ "$arch" = "x86_64" ] || die "本安装包为 linux/amd64 构建，当前架构是 ${arch}。"
 
-command -v docker >/dev/null || die "未找到 docker。请先离线安装 Docker Engine（见 README「前置条件」）。"
+if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  if [ -x "${PKG_DIR}/install-docker.sh" ] && [ -d "${PKG_DIR}/runtime" ]; then
+    log "未检测到可用的 Docker，先安装随包附带的 Docker Engine"
+    [ "$(id -u)" -eq 0 ] || die "安装 Docker 需要 root，请用 sudo 重新运行 ./install.sh。"
+    "${PKG_DIR}/install-docker.sh"
+    export PATH="/usr/local/bin:${PATH}"
+    hash -r
+  fi
+fi
+
+command -v docker >/dev/null || die "未找到 docker。请先安装 Docker Engine（本包若含 runtime/ 可执行 ./install-docker.sh）。"
 docker info >/dev/null 2>&1 || die "无法连接 Docker daemon。请确认 dockerd 已启动，且当前用户在 docker 组或使用 sudo。"
 
 if docker compose version >/dev/null 2>&1; then
@@ -90,7 +103,7 @@ fi
 if [ -f "$MANIFEST" ]; then
   log "校验镜像"
   missing=0
-  while IFS=$'\t' read -r img _digest _size; do
+  while IFS=$'\t' read -r img _id _size _repo_digest; do
     [ -n "${img:-}" ] || continue
     if docker image inspect "$img" >/dev/null 2>&1; then
       printf '    \033[0;32m✓\033[0m %s\n' "$img"
@@ -165,18 +178,25 @@ cd "$COMPOSE_DIR"
 
 log "等待服务就绪"
 port="$(grep -E '^EXPOSE_NGINX_PORT=' "$ENV_FILE" | cut -d= -f2)"; port="${port:-80}"
-# curl 在精简系统上不一定有，没有就退回用 compose 的容器状态判断
+# 探 /console/api/setup 而不是首页：首页只要 nginx+web 起来就能返回，
+# 而 api 还在跑数据库迁移，这时报"安装完成"是假的。这个接口通了才说明
+# api 容器已连上数据库、迁移跑完。
+PROBE_URL="http://127.0.0.1:${port}/console/api/setup"
 if command -v curl >/dev/null 2>&1; then
-  probe() { curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${port}/"; }
+  probe() { curl -fsS -o /dev/null --max-time 5 "$PROBE_URL"; }
 elif command -v wget >/dev/null 2>&1; then
-  probe() { wget -q -O /dev/null -T 5 "http://127.0.0.1:${port}/"; }
+  probe() { wget -q -O /dev/null -T 5 "$PROBE_URL"; }
 else
-  warn "未找到 curl/wget，改用容器状态判断就绪。"
-  probe() { ! "${COMPOSE[@]}" ps --status=restarting --status=exited -q 2>/dev/null | grep -q .; }
+  # 精简系统上可能既没有 curl 也没有 wget，退而求其次看容器有没有反复重启
+  warn "未找到 curl/wget，改用容器状态判断就绪（准确性较低）。"
+  probe() {
+    sleep 20
+    ! "${COMPOSE[@]}" ps --status=restarting --status=exited -q 2>/dev/null | grep -q .
+  }
 fi
 
 ready=0
-for _ in $(seq 1 60); do
+for _ in $(seq 1 60); do   # 最多等 5 分钟，首次启动要跑数据库迁移
   if probe 2>/dev/null; then ready=1; break; fi
   sleep 5
 done
@@ -187,7 +207,7 @@ echo
 if [ "$ready" -eq 1 ]; then
   log "安装完成"
 else
-  warn "服务已启动，但 ${port} 端口还未响应。首次启动要跑数据库迁移，可能需要几分钟。"
+  warn "服务已启动，但 API 还未就绪（首次启动要跑数据库迁移，可能需要几分钟）。"
   warn "查看日志: cd ${COMPOSE_DIR} && docker compose logs -f api"
 fi
 
