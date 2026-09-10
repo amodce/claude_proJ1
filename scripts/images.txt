@@ -1,14 +1,13 @@
-# Dify 1.9.2 离线部署所需镜像清单（linux/amd64）
-# 格式: <canonical-image>            # 说明
-# 以 # 开头的行与空行会被忽略。
+# 这个文件不再参与默认构建。
 #
-# ---- 核心服务（默认 docker compose up 必需）----
-langgenius/dify-api:1.9.2                 # API / worker / worker_beat 共用
-langgenius/dify-web:1.9.2                 # 前端
-langgenius/dify-sandbox:0.2.12            # 代码执行沙箱
-langgenius/dify-plugin-daemon:0.3.3-local # 插件守护进程
-postgres:15-alpine                        # 主数据库
-redis:6-alpine                            # 缓存 / 队列
-ubuntu/squid:latest                       # ssrf_proxy
-nginx:latest                              # 反向代理入口
-semitechnologies/weaviate:1.27.0          # 默认向量库 (VECTOR_STORE=weaviate)
+# 镜像清单现在由构建脚本在拉取前用 `docker compose config --images` 从对应版本的
+# docker-compose.yaml 现场解析（profile 取 .env.example 里的 COMPOSE_PROFILES）。
+# 原因：每个 Dify 版本的服务构成会变 —— 1.17.0 就比 1.9.2 多出 dify-agent-backend、
+# dify-agent-local-sandbox、busybox 三个镜像，手工维护的清单必然滞后于版本。
+#
+# 仅当需要完全固定镜像集合时，才用本文件的格式配合 --images-file 指定：
+#   ./scripts/build-offline-package.sh --images-file scripts/images.txt
+#
+# 格式：一行一个镜像，# 起始为注释。例如：
+# langgenius/dify-api:1.17.0
+# postgres:15-alpine

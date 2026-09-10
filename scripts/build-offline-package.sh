@@ -6,14 +6,15 @@
 #
 # 用法:
 #   ./scripts/build-offline-package.sh
-#   DIFY_VERSION=1.9.2 ./scripts/build-offline-package.sh
+#   DIFY_VERSION=1.17.0 ./scripts/build-offline-package.sh
 #   REGISTRY_MIRROR=mirror.gcr.io ./scripts/build-offline-package.sh
 #
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-DIFY_VERSION="${DIFY_VERSION:-1.9.2}"
+# 留空表示自动解析 GitHub 上最新的稳定版（纯 X.Y.Z，排除 rc/beta/fix 之类预发布）
+DIFY_VERSION="${DIFY_VERSION:-}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 ARCH_TAG="${ARCH_TAG:-linux-amd64}"
 # 当 Docker Hub 直连受限时可指定拉取镜像源，例如 mirror.gcr.io。
@@ -21,7 +22,8 @@ ARCH_TAG="${ARCH_TAG:-linux-amd64}"
 REGISTRY_MIRROR="${REGISTRY_MIRROR:-}"
 WORK_DIR="${WORK_DIR:-${REPO_ROOT}/.build}"
 OUT_DIR="${OUT_DIR:-${REPO_ROOT}/dist}"
-IMAGES_FILE="${IMAGES_FILE:-${REPO_ROOT}/scripts/images.txt}"
+# 默认从 compose 文件解析镜像清单；指定本变量可改用固定清单文件
+IMAGES_FILE="${IMAGES_FILE:-}"
 EXTRA_IMAGES_FILE="${EXTRA_IMAGES_FILE:-}"
 # 层已经是压缩过的，gzip 收益有限；-1 换取明显更快的打包速度。
 GZIP_LEVEL="${GZIP_LEVEL:-1}"
@@ -35,7 +37,8 @@ usage() {
   cat <<'EOF'
 用法: ./scripts/build-offline-package.sh [选项]
 
-  --version <版本>          Dify 版本，默认 1.9.2
+  --version <版本>          Dify 版本，默认自动取 GitHub 上最新稳定版
+  --images-file <文件>      改用固定镜像清单，不从 compose 解析（一般不需要）
   --mirror <registry>       Docker Hub pull-through 镜像源，如 mirror.gcr.io
   --extra-images <文件>     追加镜像清单（如 scripts/images-optional.txt）
   --out <目录>              产物输出目录，默认 dist/
@@ -52,6 +55,7 @@ while [ $# -gt 0 ]; do
     --version)       DIFY_VERSION="$2"; shift 2 ;;
     --mirror)        REGISTRY_MIRROR="$2"; shift 2 ;;
     --extra-images)  EXTRA_IMAGES_FILE="$2"; shift 2 ;;
+    --images-file)   IMAGES_FILE="$2"; shift 2 ;;
     --out)           OUT_DIR="$2"; shift 2 ;;
     --with-docker)   WITH_DOCKER=1; shift ;;
     --no-docker)     WITH_DOCKER=0; shift ;;
@@ -73,17 +77,21 @@ docker info >/dev/null 2>&1 || die "无法连接 Docker daemon，请确认 docke
 command -v git >/dev/null || die "未找到 git。"
 [ "$WITH_DOCKER" -eq 1 ] && { command -v curl >/dev/null || die "未找到 curl（附带 Docker 需要下载二进制；或加 --no-docker）。"; }
 
+if [ -z "$DIFY_VERSION" ]; then
+  log "解析 Dify 最新稳定版"
+  # git 输出是字典序，1.17.0 会排在 1.9.2 前面，所以必须用 sort -V 按版本号排。
+  # 只取纯 X.Y.Z，把 rc / beta / fix 之类预发布标签排除掉。
+  DIFY_VERSION="$(git ls-remote --tags --refs https://github.com/langgenius/dify.git 2>/dev/null \
+    | sed 's|.*refs/tags/||' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+  [ -n "$DIFY_VERSION" ] || die "无法解析最新版本，请用 --version 指定。"
+fi
+
 read_list() {  # 去掉注释与行尾说明，输出干净的镜像名
   [ -n "${1:-}" ] && [ -f "$1" ] || return 0
   sed -e 's/#.*$//' -e 's/[[:space:]]*$//' "$1" | grep -vE '^[[:space:]]*$' || true
 }
 
-IMAGES=()
-while IFS= read -r line; do [ -n "$line" ] && IMAGES+=("$line"); done < <(read_list "$IMAGES_FILE")
-while IFS= read -r line; do [ -n "$line" ] && IMAGES+=("$line"); done < <(read_list "$EXTRA_IMAGES_FILE")
-[ ${#IMAGES[@]} -gt 0 ] || die "镜像清单为空: $IMAGES_FILE"
-
-log "Dify 版本: ${DIFY_VERSION}  平台: ${PLATFORM}  镜像数: ${#IMAGES[@]}"
+log "Dify 版本: ${DIFY_VERSION}  平台: ${PLATFORM}"
 [ -n "$REGISTRY_MIRROR" ] && log "拉取镜像源: ${REGISTRY_MIRROR}"
 
 rm -rf "$PKG_DIR"
@@ -102,6 +110,30 @@ cp "$PKG_DIR/docker/.env.example" "$PKG_DIR/docker/.env.example.orig"
 for f in LICENSE README.md; do
   [ -f "$SRC_DIR/$f" ] && cp "$SRC_DIR/$f" "$PKG_DIR/dify-$f"
 done
+
+# ------------------------------------------------------------ 1b. 镜像清单 ----
+# 不写死镜像列表：每个 Dify 版本的服务构成都可能变（1.17 就比 1.9 多出
+# agent-backend / agent-local-sandbox / busybox），手工维护必然滞后。
+# 直接问 compose 要，profile 由 .env.example 里的 COMPOSE_PROFILES 决定。
+IMAGES=()
+if [ -n "$IMAGES_FILE" ]; then
+  log "使用指定的镜像清单: ${IMAGES_FILE}"
+  while IFS= read -r line; do [ -n "$line" ] && IMAGES+=("$line"); done < <(read_list "$IMAGES_FILE")
+else
+  log "从 compose 解析镜像清单"
+  # compose 里的服务声明了 env_file: .env，必须先有 .env 才能解析；
+  # 解析完删掉，离线包里不带 .env（由 install.sh 生成，含随机密钥）。
+  cp "$PKG_DIR/docker/.env.example" "$PKG_DIR/docker/.env"
+  while IFS= read -r line; do
+    [ -n "$line" ] && IMAGES+=("$line")
+  done < <(cd "$PKG_DIR/docker" && docker compose config --images 2>/dev/null | sort -u)
+  rm -f "$PKG_DIR/docker/.env"
+fi
+while IFS= read -r line; do [ -n "$line" ] && IMAGES+=("$line"); done < <(read_list "$EXTRA_IMAGES_FILE")
+[ ${#IMAGES[@]} -gt 0 ] || die "解析不到任何镜像，请检查 docker compose 是否可用。"
+
+log "需要 ${#IMAGES[@]} 个镜像:"
+printf '      %s\n' "${IMAGES[@]}"
 
 # -------------------------------------------------------------- 2. 拉镜像 ----
 mkdir -p "$PKG_DIR/images"
