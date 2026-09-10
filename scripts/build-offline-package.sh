@@ -66,8 +66,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-PKG_NAME="dify-offline-${DIFY_VERSION}-${ARCH_TAG}"
-PKG_DIR="${WORK_DIR}/${PKG_NAME}"
 
 log() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m错误:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -85,6 +83,11 @@ if [ -z "$DIFY_VERSION" ]; then
     | sed 's|.*refs/tags/||' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
   [ -n "$DIFY_VERSION" ] || die "无法解析最新版本，请用 --version 指定。"
 fi
+
+# 必须放在版本解析之后：自动解析时这里才拿得到真正的版本号，
+# 否则包名会变成 dify-offline--linux-amd64 这种空版本。
+PKG_NAME="dify-offline-${DIFY_VERSION}-${ARCH_TAG}"
+PKG_DIR="${WORK_DIR}/${PKG_NAME}"
 
 read_list() {  # 去掉注释与行尾说明，输出干净的镜像名
   [ -n "${1:-}" ] && [ -f "$1" ] || return 0
